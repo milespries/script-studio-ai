@@ -10,5 +10,6 @@ Script Studio AI is an AI-powered script generator and editor designed to make t
 - **Deployment:** Docker + Google Cloud Run
 - **CI/CD:** GitHub Actions
 
+
 - ## Getting Started
 Project setup instructions will be added during development.
