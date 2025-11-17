@@ -80,19 +80,109 @@ app.post("/api/generate", async (req, res) => {
   }
 });
 
-// MVP stub: edit selected section
-app.post("/api/edit", (req, res) => {
-  const { fullScript, selectedText, instruction } = req.body;
+app.post("/api/edit", async (req, res) => {
+  const { script, start, end, selectedText, instruction } = req.body as {
+    script?: string;
+    start?: number;
+    end?: number;
+    selectedText?: string;
+    instruction?: string;
+  };
 
-  // For now just uppercase the selected text to prove the flow works
-  if (!fullScript || !selectedText) {
-    return res.status(400).json({ error: "fullScript and selectedText are required" });
+  if (!script || typeof script !== "string") {
+    return res.status(400).json({ error: "script is required" });
   }
 
-  const updatedChunk = selectedText.toUpperCase() + ` [edited: ${instruction ?? "no instruction"}]`;
-  const updatedScript = fullScript.replace(selectedText, updatedChunk);
+  if (typeof start !== "number" || typeof end !== "number") {
+    return res.status(400).json({ error: "start and end must be numbers" });
+  }
 
-  res.json({ updatedScript });
+  if (start < 0 || end > script.length || start >= end) {
+    return res.status(400).json({ error: "start and end must define a valid range" });
+  }
+
+  const selectedByIndex = script.slice(start, end);
+  const selected = typeof selectedText === "string" ? selectedText : selectedByIndex;
+
+  // Optional sanity check: if provided selectedText doesn't match the slice, log it
+  if (selectedText && selectedText !== selectedByIndex) {
+    console.warn("Selected text mismatch between indices and provided text.");
+  }
+
+  const before = script.slice(0, start);
+  const after = script.slice(end);
+
+  const apiKey = process.env.OPENROUTER_API_KEY;
+  const baseUrl = process.env.OPENROUTER_BASE_URL || "https://openrouter.ai/api/v1";
+  const model = process.env.OPENROUTER_MODEL || "openai/gpt-5";
+
+  if (!apiKey) {
+    console.error("Missing OPENROUTER_API_KEY");
+    return res.status(500).json({ error: "Server not configured for AI" });
+  }
+
+  // Add markers around the selected part for extra context
+  const scriptWithMarkers = `${before}<<SELECTED>>${selected}<<END_SELECTED>>${after}`;
+
+  const systemPrompt = [
+    "You are helping a creator refine a script.",
+    "You will receive the full script with the selected section wrapped in <<SELECTED>> and <<END_SELECTED>> markers.",
+    "You will also receive the exact selected text and an editing instruction.",
+    "Rewrite only the selected text based on the instruction.",
+    "IMPORTANT:",
+    "- Do not rewrite any other part of the script.",
+    "- Do not include the markers in your output.",
+    '- Respond ONLY with a JSON object like {\"replacement\": \"new text here\"} and nothing else.'
+  ].join(" ");
+
+  try {
+    const response = await axios.post(
+      `${baseUrl}/chat/completions`,
+      {
+        model,
+        messages: [
+          { role: "system", content: systemPrompt },
+          {
+            role: "user",
+            content: [
+              `Full script with markers:\n${scriptWithMarkers}`,
+              "",
+              `Selected text:\n${selected}`,
+              "",
+              `Editing instruction:\n${instruction || "Improve this text."}`
+            ].join("\n")
+          }
+        ]
+      },
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          "Content-Type": "application/json"
+        }
+      }
+    );
+
+    const raw = response.data?.choices?.[0]?.message?.content ?? "";
+
+    let replacement = selected;
+
+    try {
+      const parsed = JSON.parse(raw);
+      if (parsed && typeof parsed.replacement === "string") {
+        replacement = parsed.replacement;
+      } else {
+        replacement = raw.trim();
+      }
+    } catch {
+      // If it's not valid JSON, fall back to raw text
+      replacement = raw.trim();
+    }
+
+    return res.json({ replacement });
+  } catch (err: any) {
+    console.error("Error calling OpenRouter for edit:", err?.response?.data || err.message);
+    return res.status(500).json({ error: "Failed to edit selection" });
+  }
 });
 
 app.listen(PORT, () => {
