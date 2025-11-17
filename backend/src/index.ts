@@ -1,9 +1,13 @@
 import express from "express";
 import cors from "cors";
+import path from "path";
 import dotenv from "dotenv";
 import axios from "axios";
 
-dotenv.config();
+// Load root-level .env file
+dotenv.config({
+  path: path.resolve(__dirname, "../../.env"), // because dist/index.js lives in /backend/dist
+});
 
 const app = express();
 const PORT = process.env.PORT || 8080;
