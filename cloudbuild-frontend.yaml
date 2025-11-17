@@ -4,7 +4,7 @@ steps:
     args:
       - build
       - --build-arg
-      - VITE_API_BASE_URL=https://script-studio-backend-REPLACE_ME-uc.a.run.app
+      - VITE_API_BASE_URL=https://script-studio-backend-301381014359.us-central1.run.app/
       - -t
       - gcr.io/$PROJECT_ID/script-studio-frontend
       - ./frontend
