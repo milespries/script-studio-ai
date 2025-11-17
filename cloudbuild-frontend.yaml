@@ -1,0 +1,31 @@
+steps:
+  # Build the frontend Docker image with build-time env var
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - build
+      - --build-arg
+      - VITE_API_BASE_URL=https://script-studio-backend-REPLACE_ME-uc.a.run.app
+      - -t
+      - gcr.io/$PROJECT_ID/script-studio-frontend
+      - ./frontend
+
+  # Push the image to Artifact/Container Registry
+  - name: 'gcr.io/cloud-builders/docker'
+    args:
+      - push
+      - gcr.io/$PROJECT_ID/script-studio-frontend
+
+  # Deploy to Cloud Run
+  - name: 'gcr.io/cloud-builders/gcloud'
+    args:
+      - run
+      - deploy
+      - script-studio-frontend
+      - --image=gcr.io/$PROJECT_ID/script-studio-frontend
+      - --platform=managed
+      - --region=us-central1
+      - --allow-unauthenticated
+      - --port=80
+
+options:
+  logging: CLOUD_LOGGING_ONLY
