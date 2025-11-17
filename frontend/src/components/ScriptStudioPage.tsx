@@ -1,11 +1,39 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 
 const API_BASE_URL = import.meta.env.VITE_API_BASE_URL || "http://localhost:8080";
+const STORAGE_KEY = "scriptStudio.mvp";
+
+type SavedState = {
+  prompt: string;
+  script: string;
+  lengthMinutes: number;
+};
+
+function loadInitialState(): SavedState {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (!raw) {
+      return { prompt: "", script: "", lengthMinutes: 3 };
+    }
+    const parsed = JSON.parse(raw);
+    return {
+      prompt: typeof parsed.prompt === "string" ? parsed.prompt : "",
+      script: typeof parsed.script === "string" ? parsed.script : "",
+      lengthMinutes:
+        typeof parsed.lengthMinutes === "number" ? parsed.lengthMinutes : 3,
+    };
+  } catch (err) {
+    console.error("Failed to load saved script:", err);
+    return { prompt: "", script: "", lengthMinutes: 3 };
+  }
+}
 
 export function ScriptStudioPage() {
-  const [prompt, setPrompt] = useState("");
-  const [lengthMinutes, setLengthMinutes] = useState(3);
-  const [script, setScript] = useState("");
+  const initial = loadInitialState();
+
+  const [prompt, setPrompt] = useState(initial.prompt);
+  const [lengthMinutes, setLengthMinutes] = useState(initial.lengthMinutes);
+  const [script, setScript] = useState(initial.script);
   const [isGenerating, setIsGenerating] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
@@ -17,6 +45,49 @@ export function ScriptStudioPage() {
   const [editInstruction, setEditInstruction] = useState("");
   const [isEditing, setIsEditing] = useState(false);
   const [editError, setEditError] = useState<string | null>(null);
+
+  // Undo
+  const [lastScript, setLastScript] = useState<string | null>(null);
+  const canUndo = lastScript !== null;
+
+  // After an AI edit, we want to re-focus and re-highlight the updated chunk
+  const [pendingSelection, setPendingSelection] = useState<{
+    start: number;
+    end: number;
+  } | null>(null);
+
+  // 🔐 Persist core fields whenever they change
+  useEffect(() => {
+    try {
+      const payload: SavedState = {
+        prompt,
+        script,
+        lengthMinutes,
+      };
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(payload));
+    } catch (err) {
+      console.error("Failed to save script:", err);
+    }
+  }, [prompt, script, lengthMinutes]);
+
+  // 🔁 Apply pending selection once script + DOM are updated
+   useEffect(() => {
+    if (!pendingSelection) return;
+    const el = scriptRef.current;
+    if (!el) return;
+
+    const { start, end } = pendingSelection;
+    const previousScrollTop = el.scrollTop;
+
+    requestAnimationFrame(() => {
+      el.focus();
+      el.setSelectionRange(start, end);
+      // Restore scroll so it doesn't jump to the bottom
+      el.scrollTop = previousScrollTop;
+    });
+
+    setPendingSelection(null);
+  }, [pendingSelection, script]);
 
   async function handleGenerate(e: React.FormEvent) {
     e.preventDefault();
@@ -45,11 +116,14 @@ export function ScriptStudioPage() {
 
       const data = await response.json();
       setScript(data.script ?? "");
-      // Reset selection & edit UI on new script
+      // Reset selection & undo on new script
       clearSelectionState();
+      setLastScript(null);
     } catch (err: any) {
       console.error(err);
-      setError(err.message || "Something went wrong while generating the script.");
+      setError(
+        err.message || "Something went wrong while generating the script."
+      );
     } finally {
       setIsGenerating(false);
     }
@@ -65,27 +139,43 @@ export function ScriptStudioPage() {
 
   function handleScriptChange(e: React.ChangeEvent<HTMLTextAreaElement>) {
     setScript(e.target.value);
-    // If the text changes, clear any old selection indices
+    // Text changed -> old indices may be invalid
     clearSelectionState();
   }
 
-  function handleScriptSelect(e: React.SyntheticEvent<HTMLTextAreaElement>) {
-    const target = e.currentTarget;
-    const start = target.selectionStart;
-    const end = target.selectionEnd;
+  function updateSelectionFromTextarea() {
+    const el = scriptRef.current;
+    if (!el) return;
+
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
 
     if (start === end) {
-      // No selection
       clearSelectionState();
       return;
     }
 
-    const selected = target.value.slice(start, end);
-
+    const selected = el.value.slice(start, end);
     setSelectionStart(start);
     setSelectionEnd(end);
     setSelectedText(selected);
     setEditError(null);
+  }
+
+  function handleScriptSelect() {
+    updateSelectionFromTextarea();
+  }
+
+  // Optional: when focusing manually, re-apply selection
+  function handleScriptFocus() {
+    if (
+      scriptRef.current &&
+      selectionStart !== null &&
+      selectionEnd !== null &&
+      selectionStart !== selectionEnd
+    ) {
+      scriptRef.current.setSelectionRange(selectionStart, selectionEnd);
+    }
   }
 
   async function handleEditSelection() {
@@ -126,14 +216,26 @@ export function ScriptStudioPage() {
       const data = await response.json();
       const replacement: string = data.replacement ?? selectedText;
 
-      // Splice the replacement into the script using the stored indices
+      // Save for undo
+      setLastScript(script);
+
+      // Build updated script
       const before = script.slice(0, selectionStart);
       const after = script.slice(selectionEnd);
       const updatedScript = before + replacement + after;
 
+      // New selection should cover the replacement text
+      const newStart = selectionStart;
+      const newEnd = selectionStart + replacement.length;
+
       setScript(updatedScript);
-      // Reset selection and instruction after applying edit
-      clearSelectionState();
+      setSelectionStart(newStart);
+      setSelectionEnd(newEnd);
+      setSelectedText(replacement);
+      setEditInstruction("");
+
+      // Mark that we want to re-focus and re-highlight this range
+      setPendingSelection({ start: newStart, end: newEnd });
     } catch (err: any) {
       console.error(err);
       setEditError(
@@ -142,6 +244,13 @@ export function ScriptStudioPage() {
     } finally {
       setIsEditing(false);
     }
+  }
+
+  function handleUndoLastEdit() {
+    if (!lastScript) return;
+    setScript(lastScript);
+    setLastScript(null);
+    clearSelectionState();
   }
 
   const hasSelection =
@@ -230,13 +339,24 @@ export function ScriptStudioPage() {
           <div className="flex h-full flex-col rounded-xl border border-slate-800 bg-slate-900/60 p-4 shadow-sm">
             <div className="mb-2 flex items-center justify-between">
               <h2 className="text-sm font-semibold text-slate-200">Script</h2>
-              <span className="text-[11px] text-slate-500">
-                {hasSelection
-                  ? "Selection ready for AI edit"
-                  : script
-                  ? "Select text to edit"
-                  : "No script yet"}
-              </span>
+              <div className="flex items-center gap-2">
+                {canUndo && (
+                  <button
+                    type="button"
+                    onClick={handleUndoLastEdit}
+                    className="rounded border border-slate-700 bg-slate-900 px-2 py-1 text-[11px] text-slate-200 hover:border-indigo-500 hover:text-indigo-300"
+                  >
+                    Undo last edit
+                  </button>
+                )}
+                <span className="text-[11px] text-slate-500">
+                  {hasSelection
+                    ? "Selection locked for AI edit"
+                    : script
+                    ? "Select text to edit"
+                    : "No script yet"}
+                </span>
+              </div>
             </div>
 
             <textarea
@@ -246,6 +366,10 @@ export function ScriptStudioPage() {
               value={script}
               onChange={handleScriptChange}
               onSelect={handleScriptSelect}
+              onMouseUp={handleScriptSelect}
+              onKeyUp={handleScriptSelect}
+              onTouchEnd={handleScriptSelect}
+              onFocus={handleScriptFocus}
             />
 
             {/* Edit panel */}
